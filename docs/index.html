@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>WebRTC KV Demo </title>
+  <title>WebRTC KV Demo (Manual Refresh)</title>
   <style>
     body { font-family: sans-serif; padding: 20px; }
     video { width: 300px; height: 200px; border: 1px solid #ccc; margin: 5px; }
@@ -11,7 +11,7 @@
   </style>
 </head>
 <body>
-  <h1>WebRTC Demo with Cloudflare KxV</h1>
+  <h1>WebRTC Demo with Cloudflare KV manula</h1>
 
   <div>
     <video id="local" autoplay playsinline></video>
@@ -23,6 +23,7 @@
     <button id="createOffer">Create Offer</button>
     <button id="acceptOffer">Accept Offer</button>
     <button id="acceptAnswer">Accept Answer</button>
+    <button id="refresh">Refresh</button>
   </div>
 
   <h3>Offer</h3>
@@ -45,36 +46,22 @@
     let remoteStream = new MediaStream();
     remoteVideo.srcObject = remoteStream;
 
-    let isOfferer = false;
-
     async function startCamera() {
       localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       localVideo.srcObject = localStream;
 
       pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
-
       localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-      pc.ontrack = event => event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
-
-      // Send ICE candidates to KV
-      pc.onicecandidate = async event => {
-        if (!event.candidate) return;
-        await fetch(`${workerUrl}?room=${roomId}&type=${isOfferer ? 'candidates-offer' : 'candidates-answer'}`, {
-          method: "POST",
-          body: JSON.stringify(event.candidate)
-        });
-      };
+      pc.ontrack = (event) => event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
     }
 
     async function createOffer() {
       if (!pc) return;
-      isOfferer = true;
-
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       offerText.value = JSON.stringify(offer);
 
-      // store offer in KV
+      // store in KV
       await fetch(`${workerUrl}?room=${roomId}&type=offer`, {
         method: "POST",
         body: offerText.value
@@ -83,7 +70,6 @@
 
     async function acceptOffer() {
       if (!pc) return;
-      isOfferer = false;
 
       // fetch offer from KV
       const res = await fetch(`${workerUrl}?room=${roomId}&type=offer`);
@@ -99,41 +85,35 @@
         method: "POST",
         body: answerText.value
       });
-
-      // start polling for offerer's ICE candidates
-      pollCandidates('candidates-offer');
     }
 
     async function acceptAnswer() {
       if (!pc) return;
 
-      // fetch answer from KV
+      // fetch latest answer from KV
       const res = await fetch(`${workerUrl}?room=${roomId}&type=answer`);
       const answer = await res.json();
       await pc.setRemoteDescription(answer);
-      
-      // start polling for answerer's ICE candidates
-      pollCandidates('candidates-answer');
+      answerText.value = JSON.stringify(answer);
     }
 
-    async function pollCandidates(type) {
-      setInterval(async () => {
-        const res = await fetch(`${workerUrl}?room=${roomId}&type=${type}`);
-        const candidates = await res.json() || [];
-        for (const c of candidates) {
-          try {
-            await pc.addIceCandidate(new RTCIceCandidate(c));
-          } catch (e) {
-            console.log("Candidate failed", e);
-          }
-        }
-      }, 1000);
+    async function refresh() {
+      // get offer first
+      const offerRes = await fetch(`${workerUrl}?room=${roomId}&type=offer`);
+      const offerData = await offerRes.json();
+      if (!offerText.value) offerText.value = JSON.stringify(offerData);
+
+      // get answer next
+      const answerRes = await fetch(`${workerUrl}?room=${roomId}&type=answer`);
+      const answerData = await answerRes.json();
+      if (!answerText.value) answerText.value = JSON.stringify(answerData);
     }
 
     document.getElementById("start").onclick = startCamera;
     document.getElementById("createOffer").onclick = createOffer;
     document.getElementById("acceptOffer").onclick = acceptOffer;
     document.getElementById("acceptAnswer").onclick = acceptAnswer;
+    document.getElementById("refresh").onclick = refresh;
   </script>
 </body>
 </html>
