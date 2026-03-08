@@ -11,7 +11,7 @@
   </style>
 </head>
 <body>
-  <h1>WebRTC Demo with Cloudflare KV</h1>
+  <h1>WebRTC Demo with Cloudflare KV NEW 2.0</h1>
 
   <div>
     <video id="local" autoplay playsinline></video>
@@ -43,25 +43,23 @@
 
     let pc = null;
     let localStream = null;
-    let remoteStream = null; // don't create empty stream
-    remoteVideo.srcObject = remoteStream;
+    let remoteStream = null;
 
     async function startCamera() {
-  localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-  localVideo.srcObject = localStream;
+      localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      localVideo.srcObject = localStream;
 
-  pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
-  localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+      pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
-  // only create remoteStream when you get tracks
-  pc.ontrack = (event) => {
-    if (!remoteStream) {
-      remoteStream = new MediaStream();
-      remoteVideo.srcObject = remoteStream;
+      pc.ontrack = (event) => {
+        if (!remoteStream) {
+          remoteStream = new MediaStream();
+          remoteVideo.srcObject = remoteStream;
+        }
+        event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+      };
     }
-    event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
-  }
-}
 
     async function createOffer() {
       if (!pc) return;
@@ -69,8 +67,7 @@
       await pc.setLocalDescription(offer);
       offerText.value = JSON.stringify(offer);
 
-      // store in KV
-      await fetch(`${workerUrl}?room=${roomId}`, {
+      await fetch(`${workerUrl}?room=${roomId}&type=offer`, {
         method: "POST",
         body: offerText.value
       });
@@ -78,8 +75,8 @@
 
     async function acceptOffer() {
       if (!pc) return;
-      // fetch offer from KV
-      const res = await fetch(`${workerUrl}?room=${roomId}`);
+
+      const res = await fetch(`${workerUrl}?room=${roomId}&type=offer`);
       const offer = await res.json();
       await pc.setRemoteDescription(offer);
 
@@ -87,8 +84,7 @@
       await pc.setLocalDescription(answer);
       answerText.value = JSON.stringify(answer);
 
-      // store answer in KV
-      await fetch(`${workerUrl}?room=${roomId}`, {
+      await fetch(`${workerUrl}?room=${roomId}&type=answer`, {
         method: "POST",
         body: answerText.value
       });
@@ -96,19 +92,26 @@
 
     async function acceptAnswer() {
       if (!pc) return;
-      // fetch latest answer from KV
-      const res = await fetch(`${workerUrl}?room=${roomId}`);
+
+      const res = await fetch(`${workerUrl}?room=${roomId}&type=answer`);
       const answer = await res.json();
+      if (!answer) return;
       await pc.setRemoteDescription(answer);
       answerText.value = JSON.stringify(answer);
     }
 
     async function refresh() {
-      const res = await fetch(`${workerUrl}?room=${roomId}`);
-      const data = await res.json();
-      // simple logic: if offer field is empty, show as offer
-      if (!offerText.value) offerText.value = JSON.stringify(data);
-      else answerText.value = JSON.stringify(data);
+      try {
+        const offerRes = await fetch(`${workerUrl}?room=${roomId}&type=offer`);
+        const offer = await offerRes.json();
+        if (offer && !offerText.value) offerText.value = JSON.stringify(offer);
+
+        const answerRes = await fetch(`${workerUrl}?room=${roomId}&type=answer`);
+        const answer = await answerRes.json();
+        if (answer) answerText.value = JSON.stringify(answer);
+      } catch (e) {
+        console.log("Error fetching KV", e);
+      }
     }
 
     document.getElementById("start").onclick = startCamera;
