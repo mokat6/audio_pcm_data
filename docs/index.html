@@ -1,18 +1,121 @@
-<script>
-  const audioFileUrl = "s3-us-west-2.amazonaws.com/demo-aud-samp/samples/Cym_Blofeld_1.wav";
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>WebRTC Demo with Cloudflare KV</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    video { width: 300px; height: 200px; border: 1px solid #ccc; margin: 5px; }
+    textarea { width: 600px; height: 100px; }
+    button { margin: 5px; padding: 5px 10px; }
+  </style>
+</head>
+<body>
+  <h1>WebRTC Demo with Cloudflare KV</h1>
 
-  const ctx = new AudioContext();
+  <div>
+    <video id="local" autoplay playsinline></video>
+    <video id="remote" autoplay playsinline></video>
+  </div>
 
-  var xhr = new XMLHttpRequest();
-  xhr.open("GET", audioFileUrl);
-  xhr.responseType = "arraybuffer";
-  xhr.onload = function () {
-    ctx.decodeAudioData(xhr.response, function (audio) {
-      var buffer = context.createBufferSource();
-      buffer.connect(context.destination);
-      buffer.buffer = audio;
-      buffer.start(0);
-    });
-  };
-  xhr.send();
-</script>
+  <div>
+    <button id="start">Start Camera</button>
+    <button id="createOffer">Create Offer</button>
+    <button id="acceptOffer">Accept Offer</button>
+    <button id="acceptAnswer">Accept Answer</button>
+    <button id="refresh">Refresh</button>
+  </div>
+
+  <h3>Offer</h3>
+  <textarea id="offer" readonly></textarea>
+
+  <h3>Answer</h3>
+  <textarea id="answer" readonly></textarea>
+
+  <script>
+    const workerUrl = "https://my-web-rtc-lol-12234.cloudflare-8fc.workers.dev"; // your Worker URL
+    const roomId = "room1"; // simple room identifier
+
+    const localVideo = document.getElementById("local");
+    const remoteVideo = document.getElementById("remote");
+    const offerText = document.getElementById("offer");
+    const answerText = document.getElementById("answer");
+
+    let pc = null;
+    let localStream = null;
+    let remoteStream = null; // don't create empty stream
+    remoteVideo.srcObject = remoteStream;
+
+    async function startCamera() {
+  localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+  localVideo.srcObject = localStream;
+
+  pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+  localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+  // only create remoteStream when you get tracks
+  pc.ontrack = (event) => {
+    if (!remoteStream) {
+      remoteStream = new MediaStream();
+      remoteVideo.srcObject = remoteStream;
+    }
+    event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+  }
+}
+
+    async function createOffer() {
+      if (!pc) return;
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      offerText.value = JSON.stringify(offer);
+
+      // store in KV
+      await fetch(`${workerUrl}?room=${roomId}`, {
+        method: "POST",
+        body: offerText.value
+      });
+    }
+
+    async function acceptOffer() {
+      if (!pc) return;
+      // fetch offer from KV
+      const res = await fetch(`${workerUrl}?room=${roomId}`);
+      const offer = await res.json();
+      await pc.setRemoteDescription(offer);
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      answerText.value = JSON.stringify(answer);
+
+      // store answer in KV
+      await fetch(`${workerUrl}?room=${roomId}`, {
+        method: "POST",
+        body: answerText.value
+      });
+    }
+
+    async function acceptAnswer() {
+      if (!pc) return;
+      // fetch latest answer from KV
+      const res = await fetch(`${workerUrl}?room=${roomId}`);
+      const answer = await res.json();
+      await pc.setRemoteDescription(answer);
+      answerText.value = JSON.stringify(answer);
+    }
+
+    async function refresh() {
+      const res = await fetch(`${workerUrl}?room=${roomId}`);
+      const data = await res.json();
+      // simple logic: if offer field is empty, show as offer
+      if (!offerText.value) offerText.value = JSON.stringify(data);
+      else answerText.value = JSON.stringify(data);
+    }
+
+    document.getElementById("start").onclick = startCamera;
+    document.getElementById("createOffer").onclick = createOffer;
+    document.getElementById("acceptOffer").onclick = acceptOffer;
+    document.getElementById("acceptAnswer").onclick = acceptAnswer;
+    document.getElementById("refresh").onclick = refresh;
+  </script>
+</body>
+</html>
