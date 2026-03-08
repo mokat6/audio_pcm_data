@@ -1,0 +1,18 @@
+<script>
+  const audioFileUrl = "s3-us-west-2.amazonaws.com/demo-aud-samp/samples/Cym_Blofeld_1.wav";
+
+  const ctx = new AudioContext();
+
+  var xhr = new XMLHttpRequest();
+  xhr.open("GET", audioFileUrl);
+  xhr.responseType = "arraybuffer";
+  xhr.onload = function () {
+    ctx.decodeAudioData(xhr.response, function (audio) {
+      var buffer = context.createBufferSource();
+      buffer.connect(context.destination);
+      buffer.buffer = audio;
+      buffer.start(0);
+    });
+  };
+  xhr.send();
+</script>
