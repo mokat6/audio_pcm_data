@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>WebRTC KV Demo</title>
+  <title>WebRTC KV Demo </title>
   <style>
     body { font-family: sans-serif; padding: 20px; }
     video { width: 300px; height: 200px; border: 1px solid #ccc; margin: 5px; }
@@ -11,7 +11,7 @@
   </style>
 </head>
 <body>
-  <h1>WebRTC KV Demo</h1>
+  <h1>WebRTC Demo with Cloudflare KxV</h1>
 
   <div>
     <video id="local" autoplay playsinline></video>
@@ -23,7 +23,6 @@
     <button id="createOffer">Create Offer</button>
     <button id="acceptOffer">Accept Offer</button>
     <button id="acceptAnswer">Accept Answer</button>
-    <button id="refresh">Refresh</button>
   </div>
 
   <h3>Offer</h3>
@@ -33,8 +32,8 @@
   <textarea id="answer" readonly></textarea>
 
   <script>
-    const workerUrl = "https://my-web-rtc-lol-12234.cloudflare-8fc.workers.dev"; // replace with your worker
-    const roomId = "room1";
+    const workerUrl = "https://my-web-rtc-lol-12234.cloudflare-8fc.workers.dev"; // your Worker URL
+    const roomId = "room1"; // simple room ID
 
     const localVideo = document.getElementById("local");
     const remoteVideo = document.getElementById("remote");
@@ -43,7 +42,10 @@
 
     let pc = null;
     let localStream = null;
-    let remoteStream = null;
+    let remoteStream = new MediaStream();
+    remoteVideo.srcObject = remoteStream;
+
+    let isOfferer = false;
 
     async function startCamera() {
       localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -52,39 +54,38 @@
       pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
 
       localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+      pc.ontrack = event => event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
 
-      pc.ontrack = (event) => {
-        if (!remoteStream) {
-          remoteStream = new MediaStream();
-          remoteVideo.srcObject = remoteStream;
-        }
-        event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+      // Send ICE candidates to KV
+      pc.onicecandidate = async event => {
+        if (!event.candidate) return;
+        await fetch(`${workerUrl}?room=${roomId}&type=${isOfferer ? 'candidates-offer' : 'candidates-answer'}`, {
+          method: "POST",
+          body: JSON.stringify(event.candidate)
+        });
       };
     }
 
     async function createOffer() {
       if (!pc) return;
+      isOfferer = true;
+
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       offerText.value = JSON.stringify(offer);
 
-      // Post SDP to KV
-      await fetch(`${workerUrl}?room=${roomId}&type=offer`, { method: "POST", body: offerText.value });
-
-      // ICE candidate handling
-      pc.onicecandidate = async (event) => {
-        if (event.candidate) {
-          await fetch(`${workerUrl}?room=${roomId}&type=candidates-offer`, {
-            method: "POST",
-            body: JSON.stringify(event.candidate)
-          });
-        }
-      };
+      // store offer in KV
+      await fetch(`${workerUrl}?room=${roomId}&type=offer`, {
+        method: "POST",
+        body: offerText.value
+      });
     }
 
     async function acceptOffer() {
       if (!pc) return;
+      isOfferer = false;
 
+      // fetch offer from KV
       const res = await fetch(`${workerUrl}?room=${roomId}&type=offer`);
       const offer = await res.json();
       await pc.setRemoteDescription(offer);
@@ -93,60 +94,46 @@
       await pc.setLocalDescription(answer);
       answerText.value = JSON.stringify(answer);
 
-      await fetch(`${workerUrl}?room=${roomId}&type=answer`, { method: "POST", body: answerText.value });
+      // store answer in KV
+      await fetch(`${workerUrl}?room=${roomId}&type=answer`, {
+        method: "POST",
+        body: answerText.value
+      });
 
-      // ICE candidate handling
-      pc.onicecandidate = async (event) => {
-        if (event.candidate) {
-          await fetch(`${workerUrl}?room=${roomId}&type=candidates-answer`, {
-            method: "POST",
-            body: JSON.stringify(event.candidate)
-          });
-        }
-      };
+      // start polling for offerer's ICE candidates
+      pollCandidates('candidates-offer');
     }
 
     async function acceptAnswer() {
       if (!pc) return;
 
+      // fetch answer from KV
       const res = await fetch(`${workerUrl}?room=${roomId}&type=answer`);
       const answer = await res.json();
-      if (answer) await pc.setRemoteDescription(answer);
-      answerText.value = JSON.stringify(answer);
+      await pc.setRemoteDescription(answer);
+      
+      // start polling for answerer's ICE candidates
+      pollCandidates('candidates-answer');
     }
 
-    // Refresh button fetches ICE candidates from KV
-    async function refresh() {
-      try {
-        // ICE candidates from offerer
-        const resOfferCand = await fetch(`${workerUrl}?room=${roomId}&type=candidates-offer`);
-        const offerCandidates = await resOfferCand.json() || [];
-        offerCandidates.forEach(c => pc?.addIceCandidate(new RTCIceCandidate(c)));
-
-        // ICE candidates from answerer
-        const resAnswerCand = await fetch(`${workerUrl}?room=${roomId}&type=candidates-answer`);
-        const answerCandidates = await resAnswerCand.json() || [];
-        answerCandidates.forEach(c => pc?.addIceCandidate(new RTCIceCandidate(c)));
-
-        // Update SDP textareas
-        const resOffer = await fetch(`${workerUrl}?room=${roomId}&type=offer`);
-        const offer = await resOffer.json();
-        if (offer) offerText.value = JSON.stringify(offer);
-
-        const resAnswer = await fetch(`${workerUrl}?room=${roomId}&type=answer`);
-        const answer = await resAnswer.json();
-        if (answer) answerText.value = JSON.stringify(answer);
-
-      } catch (e) {
-        console.log("Error refreshing", e);
-      }
+    async function pollCandidates(type) {
+      setInterval(async () => {
+        const res = await fetch(`${workerUrl}?room=${roomId}&type=${type}`);
+        const candidates = await res.json() || [];
+        for (const c of candidates) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(c));
+          } catch (e) {
+            console.log("Candidate failed", e);
+          }
+        }
+      }, 1000);
     }
 
     document.getElementById("start").onclick = startCamera;
     document.getElementById("createOffer").onclick = createOffer;
     document.getElementById("acceptOffer").onclick = acceptOffer;
     document.getElementById("acceptAnswer").onclick = acceptAnswer;
-    document.getElementById("refresh").onclick = refresh;
   </script>
 </body>
 </html>
